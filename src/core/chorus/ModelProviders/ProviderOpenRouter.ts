@@ -5,7 +5,6 @@ import { IProvider, ModelDisabled } from "./IProvider";
 import OpenAICompletionsAPIUtils from "@core/chorus/OpenAICompletionsAPIUtils";
 import { canProceedWithProvider } from "@core/utilities/ProxyUtils";
 import JSON5 from "json5";
-import { IMAGE_SUPPORTED_OPENROUTER_MODELS } from "../Models";
 
 interface ProviderError {
     message: string;
@@ -40,8 +39,12 @@ export class ProviderOpenRouter implements IProvider {
         customBaseUrl,
     }: StreamResponseParams): Promise<ModelDisabled | void> {
         const modelName = modelConfig.modelId.split("::")[1];
+
+        // Check model's supported attachment types from database
         const supportsImages =
-            IMAGE_SUPPORTED_OPENROUTER_MODELS.includes(modelName);
+            modelConfig.supportedAttachmentTypes.includes("image");
+        const supportsPdfs =
+            modelConfig.supportedAttachmentTypes.includes("pdf");
 
         const { canProceed, reason } = canProceedWithProvider(
             "openrouter",
@@ -72,6 +75,7 @@ export class ProviderOpenRouter implements IProvider {
                 llmConversation,
                 {
                     imageSupport: supportsImages,
+                    pdfSupport: supportsPdfs,
                     functionSupport: true,
                 },
             );

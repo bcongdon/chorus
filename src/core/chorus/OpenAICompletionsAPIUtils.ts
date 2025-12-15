@@ -5,6 +5,7 @@ import {
     encodeTextAttachment,
     attachmentMissingFlag,
     encodeWebpageAttachment,
+    readPdfAttachment,
 } from "@core/chorus/Models";
 import {
     getUserToolNamespacedName,
@@ -38,10 +39,15 @@ async function convertMessage(
     message: LLMMessage,
     options?: {
         imageSupport?: boolean;
+        pdfSupport?: boolean;
         functionSupport?: boolean;
     },
 ): Promise<OpenAI.ChatCompletionMessageParam[]> {
-    const { imageSupport = true, functionSupport = true } = options ?? {};
+    const {
+        imageSupport = true,
+        pdfSupport = false,
+        functionSupport = true,
+    } = options ?? {};
     if (message.role === "tool_results") {
         if (!functionSupport) {
             return [
@@ -83,6 +89,7 @@ async function convertMessage(
     } else {
         let attachmentTexts = "";
         const imageContents: OpenAI.ChatCompletionContentPart[] = [];
+        const fileContents: Array<{ type: "file"; file_data: string }> = [];
 
         for (const attachment of message.attachments) {
             switch (attachment.type) {
@@ -113,24 +120,58 @@ async function convertMessage(
                     break;
                 }
                 case "pdf": {
-                    try {
-                        console.log("Converting PDF to PNG:", attachment.path);
-                        const pngUrls = await convertPdfToPng(attachment.path);
-                        console.log("Conversion successful, got URLs");
-
-                        // Add each PNG as a separate image
-                        for (const pngUrl of pngUrls) {
-                            imageContents.push({
-                                type: "image_url",
-                                image_url: {
-                                    url: pngUrl,
-                                },
+                    if (pdfSupport) {
+                        // Send PDF as file content type (OpenRouter native format)
+                        try {
+                            const base64Pdf =
+                                await readPdfAttachment(attachment);
+                            fileContents.push({
+                                type: "file",
+                                file_data: `data:application/pdf;base64,${base64Pdf}`,
                             });
-                            console.log("Added image to contents");
+                        } catch (error) {
+                            console.error("Failed to read PDF:", error);
+                            console.error("PDF path was:", attachment.path);
+                            attachmentTexts +=
+                                attachmentMissingFlag(attachment);
                         }
-                    } catch (error) {
-                        console.error("Failed to convert PDF to PNG:", error);
-                        console.error("PDF path was:", attachment.path);
+                    } else if (imageSupport) {
+                        // Fallback: convert PDF to PNG images
+                        try {
+                            console.log(
+                                "Converting PDF to PNG:",
+                                attachment.path,
+                            );
+                            const pngUrls = await convertPdfToPng(
+                                attachment.path,
+                            );
+                            console.log("Conversion successful, got URLs");
+
+                            // Add each PNG as a separate image
+                            for (const pngUrl of pngUrls) {
+                                imageContents.push({
+                                    type: "image_url",
+                                    image_url: {
+                                        url: pngUrl,
+                                    },
+                                });
+                                console.log("Added image to contents");
+                            }
+                        } catch (error) {
+                            console.error(
+                                "Failed to convert PDF to PNG:",
+                                error,
+                            );
+                            console.error("PDF path was:", attachment.path);
+                            attachmentTexts +=
+                                attachmentMissingFlag(attachment);
+                        }
+                    } else {
+                        // Neither PDF nor image support available
+                        console.warn(
+                            `PDF attachment cannot be processed: model does not support PDFs or images. Attachment: ${attachment.path}`,
+                        );
+                        attachmentTexts += attachmentMissingFlag(attachment);
                     }
                     break;
                 }
@@ -143,19 +184,26 @@ async function convertMessage(
             }
         }
 
-        if (imageContents.length > 0) {
+        // Combine file contents, image contents, and text
+        // Note: OpenRouter extends OpenAI API with "file" content type for PDFs
+        const allContentParts: Array<
+            | OpenAI.ChatCompletionContentPart
+            | { type: "file"; file_data: string }
+        > = [...fileContents, ...imageContents];
+
+        if (allContentParts.length > 0) {
             return [
                 {
                     role: message.role,
                     content: [
-                        ...imageContents,
+                        ...allContentParts,
                         {
                             type: "text",
                             text: ensureNonEmptyTextParameter(
                                 attachmentTexts + message.content,
                             ),
                         },
-                    ],
+                    ] as any, // Type assertion needed because OpenRouter extends OpenAI API with "file" type
                 },
             ];
         } else {
@@ -175,6 +223,7 @@ async function convertConversation(
     messages: LLMMessage[],
     options?: {
         imageSupport?: boolean;
+        pdfSupport?: boolean;
         functionSupport?: boolean;
     },
 ): Promise<OpenAI.ChatCompletionMessageParam[]> {

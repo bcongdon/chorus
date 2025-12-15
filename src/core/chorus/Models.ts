@@ -386,19 +386,48 @@ export async function downloadOpenRouterModels(db: Database): Promise<number> {
         "UPDATE models SET is_enabled = 0 WHERE id LIKE 'openrouter::%'",
     );
 
+    // Get existing models with their supported attachment types to preserve PDF support
+    const existingModels = await db.select<
+        Array<{ id: string; supported_attachment_types: string }>
+    >(
+        `SELECT id, supported_attachment_types FROM models WHERE id LIKE 'openrouter::%'`,
+    );
+    const existingModelsMap = new Map(
+        existingModels.map((m) => [
+            m.id,
+            JSON.parse(m.supported_attachment_types) as AttachmentType[],
+        ]),
+    );
+
     await Promise.all(
         openRouterModels.map((model: { id: string; name: string }) => {
+            const modelId = `openrouter::${model.id}`;
             const supportsImages = IMAGE_SUPPORTED_OPENROUTER_MODELS.includes(
                 model.id,
             );
+
+            // Check if model already exists and has PDF support
+            const existingTypes = existingModelsMap.get(modelId);
+            const hasPdfSupport = existingTypes?.includes("pdf") ?? false;
+
+            // Build supported attachment types, preserving PDF if it exists
+            const supportedAttachmentTypes: AttachmentType[] = [
+                "text",
+                "webpage",
+            ];
+            if (supportsImages) {
+                supportedAttachmentTypes.push("image");
+            }
+            if (hasPdfSupport) {
+                supportedAttachmentTypes.push("pdf");
+            }
+
             return saveModelAndDefaultConfig(
                 db,
                 {
-                    id: `openrouter::${model.id}`,
+                    id: modelId,
                     displayName: `${model.name}`,
-                    supportedAttachmentTypes: supportsImages
-                        ? ["text", "image", "webpage"]
-                        : ["text", "webpage"],
+                    supportedAttachmentTypes,
                     isEnabled: true,
                     isInternal: false,
                 },
